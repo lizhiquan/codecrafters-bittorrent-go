@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -52,6 +53,15 @@ func cmdInfo() {
 
 	fmt.Printf("Tracker URL: %s\n", torrent.Announce)
 	fmt.Printf("Length: %d\n", torrent.Info.Length)
+
+	hash := sha1.New()
+	err = bencode.Marshal(hash, torrent.Info)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	fmt.Printf("Info Hash: %x\n", hash.Sum(nil))
 }
 
 func main() {
