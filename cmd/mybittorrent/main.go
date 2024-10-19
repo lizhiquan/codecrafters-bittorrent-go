@@ -62,6 +62,11 @@ func cmdInfo() {
 	}
 
 	fmt.Printf("Info Hash: %x\n", hash.Sum(nil))
+	fmt.Printf("Piece Length: %d\n", torrent.Info.PieceLength)
+	fmt.Println("Pieces Hashes:")
+	for i := 0; i < len(torrent.Info.Pieces); i += 20 {
+		fmt.Printf("%x\n", torrent.Info.Pieces[i:i+20])
+	}
 }
 
 func main() {
