@@ -1,15 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"crypto/rand"
-	"crypto/sha1"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
+	"math"
 	"net"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -17,80 +12,12 @@ import (
 	bencode "github.com/jackpal/bencode-go"
 )
 
-type TorrentInfo struct {
-	Length      int    `bencode:"length"`
-	Name        string `bencode:"name"`
-	PieceLength int    `bencode:"piece length"`
-	Pieces      string `bencode:"pieces"`
-}
-
-type Torrent struct {
-	Announce string      `bencode:"announce"`
-	Info     TorrentInfo `bencode:"info"`
-}
-
-func (t *Torrent) InfoHash() []byte {
-	hash := sha1.New()
-	_ = bencode.Marshal(hash, t.Info)
-	return hash.Sum(nil)
-}
-
-func (t *Torrent) PieceHashes() []string {
-	var hashes []string
-	for i := 0; i < len(t.Info.Pieces); i += 20 {
-		hashes = append(hashes, fmt.Sprintf("%x", t.Info.Pieces[i:i+20]))
-	}
-	return hashes
-}
-
-type TrackerResponse struct {
-	Interval int    `bencode:"interval"`
-	Peers    string `bencode:"peers"`
-}
-
-func (r *TrackerResponse) PeerList() []string {
-	var peers []string
-	for i := 0; i < len(r.Peers); i += 6 {
-		ip := net.IP(r.Peers[i : i+4])
-		port := binary.BigEndian.Uint16([]byte(r.Peers[i+4 : i+6]))
-		peers = append(peers, fmt.Sprintf("%s:%d", ip, port))
-	}
-	return peers
-}
-
-func parseTorrentFile(path string) (*Torrent, error) {
-	torrentFile, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-
-	defer torrentFile.Close()
-
-	var torrent Torrent
-	err = bencode.Unmarshal(torrentFile, &torrent)
-	if err != nil {
-		return nil, err
-	}
-
-	return &torrent, nil
-}
-
-func peerID() []byte {
-	bytes := make([]byte, 20)
-	_, err := rand.Read(bytes)
-	if err != nil {
-		panic(err)
-	}
-	return bytes
-}
-
 func cmdDecode() {
 	bencodedValue := os.Args[2]
 
 	decoded, err := bencode.Decode(strings.NewReader(bencodedValue))
 	if err != nil {
-		fmt.Println(err)
-		return
+		panic(err)
 	}
 
 	jsonOutput, _ := json.Marshal(decoded)
@@ -100,8 +27,7 @@ func cmdDecode() {
 func cmdInfo() {
 	torrent, err := parseTorrentFile(os.Args[2])
 	if err != nil {
-		fmt.Println(err)
-		return
+		panic(err)
 	}
 
 	fmt.Printf("Tracker URL: %s\n", torrent.Announce)
@@ -117,120 +43,29 @@ func cmdInfo() {
 func cmdPeers() {
 	torrent, err := parseTorrentFile(os.Args[2])
 	if err != nil {
-		fmt.Println(err)
-		return
+		panic(err)
 	}
 
-	req, err := http.NewRequest("GET", torrent.Announce, nil)
+	peers, err := getPeers(torrent)
 	if err != nil {
-		fmt.Println(err)
-		return
+		panic(err)
 	}
 
-	query := req.URL.Query()
-	query.Add("info_hash", string(torrent.InfoHash()))
-	query.Add("peer_id", string(peerID()))
-	query.Add("port", "6881")
-	query.Add("uploaded", "0")
-	query.Add("downloaded", "0")
-	query.Add("left", strconv.Itoa(torrent.Info.Length))
-	query.Add("compact", "1")
-	req.URL.RawQuery = query.Encode()
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	defer resp.Body.Close()
-
-	var response TrackerResponse
-	err = bencode.Unmarshal(resp.Body, &response)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	for _, peer := range response.PeerList() {
+	for _, peer := range peers {
 		fmt.Println(peer)
 	}
-}
-
-type HandshakeMessage struct {
-	Protocol string
-	Reserved [8]byte
-	InfoHash []byte
-	PeerID   []byte
-}
-
-func marshalHandshakeMessage(w io.Writer, m *HandshakeMessage) error {
-	if _, err := w.Write([]byte{byte(len(m.Protocol))}); err != nil {
-		return fmt.Errorf("write protocol length: %s", err)
-	}
-
-	if _, err := w.Write([]byte(m.Protocol)); err != nil {
-		return fmt.Errorf("write protocol: %s", err)
-	}
-
-	if _, err := w.Write(m.Reserved[:]); err != nil {
-		return fmt.Errorf("write reserved: %s", err)
-	}
-
-	if _, err := w.Write(m.InfoHash); err != nil {
-		return fmt.Errorf("write info hash: %s", err)
-	}
-
-	if _, err := w.Write(m.PeerID); err != nil {
-		return fmt.Errorf("write peer id: %s", err)
-	}
-
-	return nil
-}
-
-func unmarshalHandshakeMessage(r io.Reader, m *HandshakeMessage) error {
-	reader := bufio.NewReader(r)
-
-	protocolLength, err := reader.ReadByte()
-	if err != nil {
-		return fmt.Errorf("read protocol length: %s", err)
-	}
-
-	protocol := make([]byte, protocolLength)
-	if _, err := io.ReadFull(reader, protocol); err != nil {
-		return fmt.Errorf("read protocol: %s", err)
-	}
-	m.Protocol = string(protocol)
-
-	if _, err := io.ReadFull(reader, m.Reserved[:]); err != nil {
-		return fmt.Errorf("read reserved: %s", err)
-	}
-
-	m.InfoHash = make([]byte, 20)
-	if _, err := io.ReadFull(reader, m.InfoHash); err != nil {
-		return fmt.Errorf("read info hash: %s", err)
-	}
-
-	m.PeerID = make([]byte, 20)
-	if _, err := io.ReadFull(reader, m.PeerID); err != nil {
-		return fmt.Errorf("read peer id: %s", err)
-	}
-
-	return nil
 }
 
 func cmdHandshake() {
 	torrent, err := parseTorrentFile(os.Args[2])
 	if err != nil {
-		fmt.Println(err)
-		return
+		panic(err)
 	}
 
 	peerAddr := os.Args[3]
 	conn, err := net.Dial("tcp", peerAddr)
 	if err != nil {
-		fmt.Println(err)
-		return
+		panic(err)
 	}
 
 	defer conn.Close()
@@ -241,17 +76,137 @@ func cmdHandshake() {
 		PeerID:   peerID(),
 	}
 	if err := marshalHandshakeMessage(conn, &m); err != nil {
-		fmt.Println(err)
-		return
+		panic(err)
 	}
 
 	var response HandshakeMessage
 	if err := unmarshalHandshakeMessage(conn, &response); err != nil {
-		fmt.Println(err)
-		return
+		panic(err)
 	}
 
 	fmt.Printf("Peer ID: %x\n", response.PeerID)
+}
+
+func cmdDownloadPiece() {
+	piecePath := os.Args[3]
+
+	torrent, err := parseTorrentFile(os.Args[4])
+	if err != nil {
+		panic(err)
+	}
+
+	pieceIndex, err := strconv.Atoi(os.Args[5])
+	if err != nil {
+		panic(err)
+	}
+
+	peers, err := getPeers(torrent)
+	if err != nil {
+		panic(err)
+	}
+	if len(peers) == 0 {
+		panic("no peers")
+	}
+
+	conn, err := net.Dial("tcp", peers[0])
+	if err != nil {
+		panic(err)
+	}
+
+	defer conn.Close()
+
+	handshakeMessage := HandshakeMessage{
+		Protocol: "BitTorrent protocol",
+		InfoHash: torrent.InfoHash(),
+		PeerID:   peerID(),
+	}
+	if err := marshalHandshakeMessage(conn, &handshakeMessage); err != nil {
+		panic(err)
+	}
+	if err := unmarshalHandshakeMessage(conn, &handshakeMessage); err != nil {
+		panic(err)
+	}
+
+	// read bitfield
+	var m PeerMessage
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+
+	if m.ID != IDBitfield {
+		panic("expect bitfield")
+	}
+
+	// send interested
+	m = PeerMessage{ID: IDInterested}
+	if err := marshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+
+	// read unchoke
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+
+	if m.ID != IDUnchoke {
+		panic("expect unchock")
+	}
+
+	// create piece file
+	pieceFile, err := os.Create(piecePath)
+	if err != nil {
+		panic(err)
+	}
+	defer pieceFile.Close()
+
+	// download piece
+	size := torrent.Info.Length
+	pieceSize := torrent.Info.PieceLength
+	pieceCount := int(math.Ceil(float64(size) / float64(pieceSize)))
+	if pieceIndex == pieceCount-1 {
+		pieceSize = size % pieceSize
+	}
+	blockSize := 16 * 1024 // 16KB
+	blockCount := int(math.Ceil(float64(pieceSize) / float64(blockSize)))
+	for i := 0; i < blockCount; i++ {
+		length := blockSize
+		if i == blockCount-1 {
+			length = pieceSize - (blockCount-1)*blockSize
+		}
+
+		// send request
+		payload, err := (&RequestPayload{
+			Index:  uint32(pieceIndex),
+			Begin:  uint32(i * blockSize),
+			Length: uint32(length),
+		}).MarshalBinary()
+		if err != nil {
+			panic(err)
+		}
+		m = PeerMessage{ID: IDRequest, Payload: payload}
+		if err := marshalPeerMessage(conn, &m); err != nil {
+			panic(err)
+		}
+
+		// read piece
+		if err := unmarshalPeerMessage(conn, &m); err != nil {
+			panic(err)
+		}
+
+		if m.ID != IDPiece {
+			panic("expect piece")
+		}
+
+		var piecePayload PiecePayload
+		if err := piecePayload.UnmarshalBinary(m.Payload); err != nil {
+			panic(err)
+		}
+
+		// write piece to file
+		if _, err := pieceFile.Write(piecePayload.Block); err != nil {
+			panic(err)
+		}
+	}
 }
 
 func main() {
@@ -266,6 +221,8 @@ func main() {
 		cmdPeers()
 	case "handshake":
 		cmdHandshake()
+	case "download_piece":
+		cmdDownloadPiece()
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
