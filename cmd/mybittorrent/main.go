@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -72,6 +75,15 @@ func parseTorrentFile(path string) (*Torrent, error) {
 	return &torrent, nil
 }
 
+func peerID() []byte {
+	bytes := make([]byte, 20)
+	_, err := rand.Read(bytes)
+	if err != nil {
+		panic(err)
+	}
+	return bytes
+}
+
 func cmdDecode() {
 	bencodedValue := os.Args[2]
 
@@ -117,7 +129,7 @@ func cmdPeers() {
 
 	query := req.URL.Query()
 	query.Add("info_hash", string(torrent.InfoHash()))
-	query.Add("peer_id", "00112233445566778899")
+	query.Add("peer_id", string(peerID()))
 	query.Add("port", "6881")
 	query.Add("uploaded", "0")
 	query.Add("downloaded", "0")
@@ -145,6 +157,103 @@ func cmdPeers() {
 	}
 }
 
+type HandshakeMessage struct {
+	Protocol string
+	Reserved [8]byte
+	InfoHash []byte
+	PeerID   []byte
+}
+
+func marshalHandshakeMessage(w io.Writer, m *HandshakeMessage) error {
+	if _, err := w.Write([]byte{byte(len(m.Protocol))}); err != nil {
+		return fmt.Errorf("write protocol length: %s", err)
+	}
+
+	if _, err := w.Write([]byte(m.Protocol)); err != nil {
+		return fmt.Errorf("write protocol: %s", err)
+	}
+
+	if _, err := w.Write(m.Reserved[:]); err != nil {
+		return fmt.Errorf("write reserved: %s", err)
+	}
+
+	if _, err := w.Write(m.InfoHash); err != nil {
+		return fmt.Errorf("write info hash: %s", err)
+	}
+
+	if _, err := w.Write(m.PeerID); err != nil {
+		return fmt.Errorf("write peer id: %s", err)
+	}
+
+	return nil
+}
+
+func unmarshalHandshakeMessage(r io.Reader, m *HandshakeMessage) error {
+	reader := bufio.NewReader(r)
+
+	protocolLength, err := reader.ReadByte()
+	if err != nil {
+		return fmt.Errorf("read protocol length: %s", err)
+	}
+
+	protocol := make([]byte, protocolLength)
+	if _, err := io.ReadFull(reader, protocol); err != nil {
+		return fmt.Errorf("read protocol: %s", err)
+	}
+	m.Protocol = string(protocol)
+
+	if _, err := io.ReadFull(reader, m.Reserved[:]); err != nil {
+		return fmt.Errorf("read reserved: %s", err)
+	}
+
+	m.InfoHash = make([]byte, 20)
+	if _, err := io.ReadFull(reader, m.InfoHash); err != nil {
+		return fmt.Errorf("read info hash: %s", err)
+	}
+
+	m.PeerID = make([]byte, 20)
+	if _, err := io.ReadFull(reader, m.PeerID); err != nil {
+		return fmt.Errorf("read peer id: %s", err)
+	}
+
+	return nil
+}
+
+func cmdHandshake() {
+	torrent, err := parseTorrentFile(os.Args[2])
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	peerAddr := os.Args[3]
+	conn, err := net.Dial("tcp", peerAddr)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	defer conn.Close()
+
+	m := HandshakeMessage{
+		Protocol: "BitTorrent protocol",
+		InfoHash: torrent.InfoHash(),
+		PeerID:   peerID(),
+	}
+	if err := marshalHandshakeMessage(conn, &m); err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	var response HandshakeMessage
+	if err := unmarshalHandshakeMessage(conn, &response); err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	fmt.Printf("Peer ID: %x\n", response.PeerID)
+}
+
 func main() {
 	command := os.Args[1]
 
@@ -155,6 +264,8 @@ func main() {
 		cmdInfo()
 	case "peers":
 		cmdPeers()
+	case "handshake":
+		cmdHandshake()
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
