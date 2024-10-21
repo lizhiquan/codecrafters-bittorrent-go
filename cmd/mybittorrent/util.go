@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/sha1"
 	"fmt"
 	"math"
 	"net"
@@ -74,6 +76,7 @@ func getPeers(torrent *Torrent) ([]string, error) {
 type task struct {
 	piecePath  string
 	pieceIndex int
+	pieceHash  []byte
 }
 
 func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync.WaitGroup) {
@@ -101,7 +104,6 @@ func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync
 	if err := unmarshalPeerMessage(conn, &m); err != nil {
 		panic(err)
 	}
-
 	if m.ID != IDBitfield {
 		panic("expect bitfield")
 	}
@@ -116,12 +118,12 @@ func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync
 	if err := unmarshalPeerMessage(conn, &m); err != nil {
 		panic(err)
 	}
-
 	if m.ID != IDUnchoke {
 		panic("expect unchock")
 	}
 
 	for task := range taskCh {
+	StartDownloadPiece:
 		// create piece file
 		pieceFile, err := os.Create(task.piecePath)
 		if err != nil {
@@ -137,6 +139,7 @@ func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync
 		}
 		blockSize := 16 * 1024 // 16KB
 		blockCount := int(math.Ceil(float64(pieceSize) / float64(blockSize)))
+		hash := sha1.New()
 		for i := 0; i < blockCount; i++ {
 			length := blockSize
 			if i == blockCount-1 {
@@ -161,7 +164,6 @@ func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync
 			if err := unmarshalPeerMessage(conn, &m); err != nil {
 				panic(err)
 			}
-
 			if m.ID != IDPiece {
 				panic("expect piece")
 			}
@@ -171,16 +173,23 @@ func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync
 				panic(err)
 			}
 
-			// write piece to file
 			if _, err := pieceFile.Write(piecePayload.Block); err != nil {
 				panic(err)
 			}
 
-			// TODO: checksum
-			// if checksum is not correct, delete the piece file and retry
+			if _, err := hash.Write(piecePayload.Block); err != nil {
+				panic(err)
+			}
 		}
 
 		pieceFile.Close()
+
+		// verify piece hash
+		if !bytes.Equal(hash.Sum(nil), task.pieceHash) {
+			os.Remove(task.piecePath)
+			goto StartDownloadPiece
+		}
+
 		wg.Done()
 	}
 }

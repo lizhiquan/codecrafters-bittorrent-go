@@ -38,7 +38,7 @@ func cmdInfo() {
 	fmt.Printf("Piece Length: %d\n", torrent.Info.PieceLength)
 	fmt.Println("Piece Hashes:")
 	for _, hash := range torrent.PieceHashes() {
-		fmt.Println(hash)
+		fmt.Printf("%x\n", hash)
 	}
 }
 
@@ -114,7 +114,11 @@ func cmdDownloadPiece() {
 	wg := sync.WaitGroup{}
 	go downloadPiece(torrent, peers[0], taskCh, &wg)
 	wg.Add(1)
-	taskCh <- task{piecePath: piecePath, pieceIndex: pieceIndex}
+	taskCh <- task{
+		piecePath:  piecePath,
+		pieceIndex: pieceIndex,
+		pieceHash:  torrent.PieceHashes()[pieceIndex],
+	}
 
 	wg.Wait()
 	close(taskCh)
@@ -143,8 +147,13 @@ func cmdDownload() {
 	pieceSize := torrent.Info.PieceLength
 	pieceCount := int(math.Ceil(float64(size) / float64(pieceSize)))
 	wg.Add(pieceCount)
+	pieceHashes := torrent.PieceHashes()
 	for i := 0; i < pieceCount; i++ {
-		taskCh <- task{piecePath: fmt.Sprintf("%s-%d", piecePath, i), pieceIndex: i}
+		taskCh <- task{
+			piecePath:  fmt.Sprintf("%s-%d", piecePath, i),
+			pieceIndex: i,
+			pieceHash:  pieceHashes[i],
+		}
 	}
 
 	wg.Wait()

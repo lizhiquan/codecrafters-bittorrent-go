@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha1"
-	"fmt"
 
 	bencode "github.com/jackpal/bencode-go"
 )
@@ -25,10 +24,10 @@ func (t *Torrent) InfoHash() []byte {
 	return hash.Sum(nil)
 }
 
-func (t *Torrent) PieceHashes() []string {
-	var hashes []string
+func (t *Torrent) PieceHashes() [][]byte {
+	var hashes [][]byte
 	for i := 0; i < len(t.Info.Pieces); i += 20 {
-		hashes = append(hashes, fmt.Sprintf("%x", t.Info.Pieces[i:i+20]))
+		hashes = append(hashes, []byte(t.Info.Pieces[i:i+20]))
 	}
 	return hashes
 }
