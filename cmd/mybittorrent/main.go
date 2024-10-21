@@ -239,16 +239,6 @@ func cmdMagnetHandshake() {
 	}
 
 	fmt.Printf("Peer ID: %x\n", handshake.PeerID)
-	return
-
-	// read bitfield
-	var m PeerMessage
-	if err := unmarshalPeerMessage(conn, &m); err != nil {
-		panic(err)
-	}
-	if m.ID != IDBitfield {
-		panic("expect bitfield")
-	}
 
 	if handshake.Reserved[5]&(1<<4) == 0 {
 		log.Println("extension not supported")
@@ -258,6 +248,7 @@ func cmdMagnetHandshake() {
 	// extension handshake
 	mID := byte(0)
 	var buffer bytes.Buffer
+	buffer.WriteByte(mID)
 	if err := bencode.Marshal(&buffer, map[string]any{
 		"m": map[string]any{
 			"ut_metadata": 1,
@@ -265,9 +256,12 @@ func cmdMagnetHandshake() {
 	}); err != nil {
 		panic(err)
 	}
-	m = PeerMessage{
+	m := PeerMessage{
 		ID:      20,
-		Payload: append([]byte{mID}, buffer.Bytes()...),
+		Payload: buffer.Bytes(),
+	}
+	if err := marshalPeerMessage(conn, &m); err != nil {
+		panic(err)
 	}
 }
 
