@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha1"
+	"os"
 
 	bencode "github.com/jackpal/bencode-go"
 )
@@ -18,6 +19,23 @@ type Torrent struct {
 	Info     TorrentInfo `bencode:"info"`
 }
 
+func NewTorrent(path string) (*Torrent, error) {
+	torrentFile, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	defer torrentFile.Close()
+
+	var torrent Torrent
+	err = bencode.Unmarshal(torrentFile, &torrent)
+	if err != nil {
+		return nil, err
+	}
+
+	return &torrent, nil
+}
+
 func (t *Torrent) InfoHash() []byte {
 	hash := sha1.New()
 	_ = bencode.Marshal(hash, t.Info)
@@ -30,4 +48,8 @@ func (t *Torrent) PieceHashes() [][]byte {
 		hashes = append(hashes, []byte(t.Info.Pieces[i:i+20]))
 	}
 	return hashes
+}
+
+func (t *Torrent) Peers() ([]string, error) {
+	return getPeers(t.Announce, t.InfoHash(), t.Info.Length)
 }

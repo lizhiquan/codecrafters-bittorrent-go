@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"os"
@@ -27,7 +29,7 @@ func cmdDecode() {
 }
 
 func cmdInfo() {
-	torrent, err := parseTorrentFile(os.Args[2])
+	torrent, err := NewTorrent(os.Args[2])
 	if err != nil {
 		panic(err)
 	}
@@ -43,12 +45,12 @@ func cmdInfo() {
 }
 
 func cmdPeers() {
-	torrent, err := parseTorrentFile(os.Args[2])
+	torrent, err := NewTorrent(os.Args[2])
 	if err != nil {
 		panic(err)
 	}
 
-	peers, err := getPeers(torrent)
+	peers, err := torrent.Peers()
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +61,7 @@ func cmdPeers() {
 }
 
 func cmdHandshake() {
-	torrent, err := parseTorrentFile(os.Args[2])
+	torrent, err := NewTorrent(os.Args[2])
 	if err != nil {
 		panic(err)
 	}
@@ -92,7 +94,7 @@ func cmdHandshake() {
 func cmdDownloadPiece() {
 	piecePath := os.Args[3]
 
-	torrent, err := parseTorrentFile(os.Args[4])
+	torrent, err := NewTorrent(os.Args[4])
 	if err != nil {
 		panic(err)
 	}
@@ -102,7 +104,7 @@ func cmdDownloadPiece() {
 		panic(err)
 	}
 
-	peers, err := getPeers(torrent)
+	peers, err := torrent.Peers()
 	if err != nil {
 		panic(err)
 	}
@@ -127,12 +129,12 @@ func cmdDownloadPiece() {
 func cmdDownload() {
 	piecePath := os.Args[3]
 
-	torrent, err := parseTorrentFile(os.Args[4])
+	torrent, err := NewTorrent(os.Args[4])
 	if err != nil {
 		panic(err)
 	}
 
-	peers, err := getPeers(torrent)
+	peers, err := torrent.Peers()
 	if err != nil {
 		panic(err)
 	}
@@ -184,6 +186,90 @@ func cmdDownload() {
 	}
 }
 
+func cmdMagnetParse() {
+	magnetURL := os.Args[2]
+
+	m, err := NewMagnet(magnetURL)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Tracker URL: %s\n", m.TrackerURL)
+	fmt.Printf("Info Hash: %x\n", m.InfoHash)
+}
+
+func cmdMagnetHandshake() {
+	magnetURL := os.Args[2]
+
+	magnet, err := NewMagnet(magnetURL)
+	if err != nil {
+		panic(err)
+	}
+
+	peers, err := magnet.Peers()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(peers)
+	if len(peers) == 0 {
+		panic("no peers")
+	}
+
+	conn, err := net.Dial("tcp", peers[0])
+	if err != nil {
+		panic(err)
+	}
+
+	defer conn.Close()
+
+	handshake := HandshakeMessage{
+		Protocol: "BitTorrent protocol",
+		InfoHash: magnet.InfoHash,
+		PeerID:   peerID(),
+	}
+	// https://www.bittorrent.org/beps/bep_0010.html
+	handshake.Reserved[5] = 1 << 4
+	if err := marshalHandshakeMessage(conn, &handshake); err != nil {
+		panic(err)
+	}
+
+	if err := unmarshalHandshakeMessage(conn, &handshake); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Peer ID: %x\n", handshake.PeerID)
+
+	// read bitfield
+	var m PeerMessage
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+	if m.ID != IDBitfield {
+		panic("expect bitfield")
+	}
+
+	if handshake.Reserved[5]&(1<<4) == 0 {
+		log.Println("extension not supported")
+		return
+	}
+
+	// extension handshake
+	mID := byte(0)
+	var buffer bytes.Buffer
+	if err := bencode.Marshal(&buffer, map[string]any{
+		"m": map[string]any{
+			"ut_metadata": 1,
+		},
+	}); err != nil {
+		panic(err)
+	}
+	m = PeerMessage{
+		ID:      20,
+		Payload: append([]byte{mID}, buffer.Bytes()...),
+	}
+}
+
 func main() {
 	command := os.Args[1]
 
@@ -200,6 +286,10 @@ func main() {
 		cmdDownloadPiece()
 	case "download":
 		cmdDownload()
+	case "magnet_parse":
+		cmdMagnetParse()
+	case "magnet_handshake":
+		cmdMagnetHandshake()
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)

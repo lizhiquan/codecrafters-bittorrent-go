@@ -15,23 +15,6 @@ import (
 	bencode "github.com/jackpal/bencode-go"
 )
 
-func parseTorrentFile(path string) (*Torrent, error) {
-	torrentFile, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-
-	defer torrentFile.Close()
-
-	var torrent Torrent
-	err = bencode.Unmarshal(torrentFile, &torrent)
-	if err != nil {
-		return nil, err
-	}
-
-	return &torrent, nil
-}
-
 func peerID() []byte {
 	bytes := make([]byte, 20)
 	_, err := rand.Read(bytes)
@@ -41,19 +24,19 @@ func peerID() []byte {
 	return bytes
 }
 
-func getPeers(torrent *Torrent) ([]string, error) {
-	req, err := http.NewRequest("GET", torrent.Announce, nil)
+func getPeers(trackerURL string, infoHash []byte, length int) ([]string, error) {
+	req, err := http.NewRequest("GET", trackerURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
 	query := req.URL.Query()
-	query.Add("info_hash", string(torrent.InfoHash()))
+	query.Add("info_hash", string(infoHash))
 	query.Add("peer_id", string(peerID()))
 	query.Add("port", "6881")
 	query.Add("uploaded", "0")
 	query.Add("downloaded", "0")
-	query.Add("left", strconv.Itoa(torrent.Info.Length))
+	query.Add("left", strconv.Itoa(length))
 	query.Add("compact", "1")
 	req.URL.RawQuery = query.Encode()
 
