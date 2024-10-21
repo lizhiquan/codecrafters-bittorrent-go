@@ -239,6 +239,7 @@ func cmdMagnetHandshake() {
 	}
 
 	fmt.Printf("Peer ID: %x\n", handshake.PeerID)
+	return
 
 	// read bitfield
 	var m PeerMessage

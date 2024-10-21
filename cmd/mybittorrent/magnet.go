@@ -31,5 +31,5 @@ func NewMagnet(magnet string) (*Magnet, error) {
 }
 
 func (m *Magnet) Peers() ([]string, error) {
-	return getPeers(m.TrackerURL, m.InfoHash, 0)
+	return getPeers(m.TrackerURL, m.InfoHash, 1)
 }
