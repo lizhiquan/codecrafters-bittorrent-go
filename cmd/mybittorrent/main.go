@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	bencode "github.com/jackpal/bencode-go"
 )
@@ -108,104 +110,68 @@ func cmdDownloadPiece() {
 		panic("no peers")
 	}
 
-	conn, err := net.Dial("tcp", peers[0])
+	taskCh := make(chan task)
+	wg := sync.WaitGroup{}
+	go downloadPiece(torrent, peers[0], taskCh, &wg)
+	wg.Add(1)
+	taskCh <- task{piecePath: piecePath, pieceIndex: pieceIndex}
+
+	wg.Wait()
+	close(taskCh)
+}
+
+func cmdDownload() {
+	piecePath := os.Args[3]
+
+	torrent, err := parseTorrentFile(os.Args[4])
 	if err != nil {
 		panic(err)
 	}
 
-	defer conn.Close()
-
-	handshakeMessage := HandshakeMessage{
-		Protocol: "BitTorrent protocol",
-		InfoHash: torrent.InfoHash(),
-		PeerID:   peerID(),
-	}
-	if err := marshalHandshakeMessage(conn, &handshakeMessage); err != nil {
-		panic(err)
-	}
-	if err := unmarshalHandshakeMessage(conn, &handshakeMessage); err != nil {
-		panic(err)
-	}
-
-	// read bitfield
-	var m PeerMessage
-	if err := unmarshalPeerMessage(conn, &m); err != nil {
-		panic(err)
-	}
-
-	if m.ID != IDBitfield {
-		panic("expect bitfield")
-	}
-
-	// send interested
-	m = PeerMessage{ID: IDInterested}
-	if err := marshalPeerMessage(conn, &m); err != nil {
-		panic(err)
-	}
-
-	// read unchoke
-	if err := unmarshalPeerMessage(conn, &m); err != nil {
-		panic(err)
-	}
-
-	if m.ID != IDUnchoke {
-		panic("expect unchock")
-	}
-
-	// create piece file
-	pieceFile, err := os.Create(piecePath)
+	peers, err := getPeers(torrent)
 	if err != nil {
 		panic(err)
 	}
-	defer pieceFile.Close()
 
-	// download piece
+	taskCh := make(chan task)
+	wg := sync.WaitGroup{}
+	for i := 0; i < len(peers); i++ {
+		go downloadPiece(torrent, peers[i], taskCh, &wg)
+	}
+
 	size := torrent.Info.Length
 	pieceSize := torrent.Info.PieceLength
 	pieceCount := int(math.Ceil(float64(size) / float64(pieceSize)))
-	if pieceIndex == pieceCount-1 {
-		pieceSize = size % pieceSize
+	wg.Add(pieceCount)
+	for i := 0; i < pieceCount; i++ {
+		taskCh <- task{piecePath: fmt.Sprintf("%s-%d", piecePath, i), pieceIndex: i}
 	}
-	blockSize := 16 * 1024 // 16KB
-	blockCount := int(math.Ceil(float64(pieceSize) / float64(blockSize)))
-	for i := 0; i < blockCount; i++ {
-		length := blockSize
-		if i == blockCount-1 {
-			length = pieceSize - (blockCount-1)*blockSize
-		}
 
-		// send request
-		payload, err := (&RequestPayload{
-			Index:  uint32(pieceIndex),
-			Begin:  uint32(i * blockSize),
-			Length: uint32(length),
-		}).MarshalBinary()
+	wg.Wait()
+	close(taskCh)
+
+	// merge pieces to target file
+	targetFile, err := os.Create(piecePath)
+	if err != nil {
+		panic(err)
+	}
+	defer targetFile.Close()
+
+	for i := 0; i < pieceCount; i++ {
+		pieceFile, err := os.Open(fmt.Sprintf("%s-%d", piecePath, i))
 		if err != nil {
 			panic(err)
 		}
-		m = PeerMessage{ID: IDRequest, Payload: payload}
-		if err := marshalPeerMessage(conn, &m); err != nil {
+
+		if _, err := io.Copy(targetFile, pieceFile); err != nil {
 			panic(err)
 		}
 
-		// read piece
-		if err := unmarshalPeerMessage(conn, &m); err != nil {
-			panic(err)
-		}
+		pieceFile.Close()
+	}
 
-		if m.ID != IDPiece {
-			panic("expect piece")
-		}
-
-		var piecePayload PiecePayload
-		if err := piecePayload.UnmarshalBinary(m.Payload); err != nil {
-			panic(err)
-		}
-
-		// write piece to file
-		if _, err := pieceFile.Write(piecePayload.Block); err != nil {
-			panic(err)
-		}
+	for i := 0; i < pieceCount; i++ {
+		os.Remove(fmt.Sprintf("%s-%d", piecePath, i))
 	}
 }
 
@@ -223,6 +189,8 @@ func main() {
 		cmdHandshake()
 	case "download_piece":
 		cmdDownloadPiece()
+	case "download":
+		cmdDownload()
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
