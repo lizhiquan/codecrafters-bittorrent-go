@@ -73,7 +73,7 @@ func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync
 
 	handshakeMessage := HandshakeMessage{
 		Protocol: "BitTorrent protocol",
-		InfoHash: torrent.InfoHash(),
+		InfoHash: torrent.Info.Hash(),
 		PeerID:   peerID(),
 	}
 	if err := marshalHandshakeMessage(conn, &handshakeMessage); err != nil {

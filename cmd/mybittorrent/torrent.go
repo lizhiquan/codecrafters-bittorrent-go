@@ -36,20 +36,20 @@ func NewTorrent(path string) (*Torrent, error) {
 	return &torrent, nil
 }
 
-func (t *Torrent) InfoHash() []byte {
+func (t *TorrentInfo) Hash() []byte {
 	hash := sha1.New()
-	_ = bencode.Marshal(hash, t.Info)
+	_ = bencode.Marshal(hash, *t)
 	return hash.Sum(nil)
 }
 
-func (t *Torrent) PieceHashes() [][]byte {
+func (t *TorrentInfo) PieceHashes() [][]byte {
 	var hashes [][]byte
-	for i := 0; i < len(t.Info.Pieces); i += 20 {
-		hashes = append(hashes, []byte(t.Info.Pieces[i:i+20]))
+	for i := 0; i < len(t.Pieces); i += 20 {
+		hashes = append(hashes, []byte(t.Pieces[i:i+20]))
 	}
 	return hashes
 }
 
 func (t *Torrent) Peers() ([]string, error) {
-	return getPeers(t.Announce, t.InfoHash(), t.Info.Length)
+	return getPeers(t.Announce, t.Info.Hash(), t.Info.Length)
 }

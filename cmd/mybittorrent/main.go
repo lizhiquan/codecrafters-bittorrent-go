@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,10 +36,10 @@ func cmdInfo() {
 
 	fmt.Printf("Tracker URL: %s\n", torrent.Announce)
 	fmt.Printf("Length: %d\n", torrent.Info.Length)
-	fmt.Printf("Info Hash: %x\n", torrent.InfoHash())
+	fmt.Printf("Info Hash: %x\n", torrent.Info.Hash())
 	fmt.Printf("Piece Length: %d\n", torrent.Info.PieceLength)
 	fmt.Println("Piece Hashes:")
-	for _, hash := range torrent.PieceHashes() {
+	for _, hash := range torrent.Info.PieceHashes() {
 		fmt.Printf("%x\n", hash)
 	}
 }
@@ -75,7 +76,7 @@ func cmdHandshake() {
 
 	m := HandshakeMessage{
 		Protocol: "BitTorrent protocol",
-		InfoHash: torrent.InfoHash(),
+		InfoHash: torrent.Info.Hash(),
 		PeerID:   peerID(),
 	}
 	if err := marshalHandshakeMessage(conn, &m); err != nil {
@@ -118,7 +119,7 @@ func cmdDownloadPiece() {
 	taskCh <- task{
 		piecePath:  piecePath,
 		pieceIndex: pieceIndex,
-		pieceHash:  torrent.PieceHashes()[pieceIndex],
+		pieceHash:  torrent.Info.PieceHashes()[pieceIndex],
 	}
 
 	wg.Wait()
@@ -148,7 +149,7 @@ func cmdDownload() {
 	pieceSize := torrent.Info.PieceLength
 	pieceCount := int(math.Ceil(float64(size) / float64(pieceSize)))
 	wg.Add(pieceCount)
-	pieceHashes := torrent.PieceHashes()
+	pieceHashes := torrent.Info.PieceHashes()
 	for i := 0; i < pieceCount; i++ {
 		taskCh <- task{
 			piecePath:  fmt.Sprintf("%s-%d", piecePath, i),
@@ -392,6 +393,28 @@ func cmdMagnetInfo() {
 	}
 	if err := marshalPeerMessage(conn, &m); err != nil {
 		panic(err)
+	}
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+	if err := extensionPayload.UnmarshalBinary(m.Payload); err != nil {
+		panic(err)
+	}
+
+	size := extensionPayload.Message.(map[string]any)["total_size"].(int64)
+	metadataBytes := m.Payload[len(m.Payload)-int(size):]
+	var torrentInfo TorrentInfo
+	if err := bencode.Unmarshal(bytes.NewReader(metadataBytes), &torrentInfo); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Tracker URL: %s\n", magnet.TrackerURL)
+	fmt.Printf("Length: %d\n", torrentInfo.Length)
+	fmt.Printf("Info Hash: %x\n", torrentInfo.Hash())
+	fmt.Printf("Piece Length: %d\n", torrentInfo.PieceLength)
+	fmt.Println("Piece Hashes:")
+	for _, hash := range torrentInfo.PieceHashes() {
+		fmt.Printf("%x\n", hash)
 	}
 }
 
