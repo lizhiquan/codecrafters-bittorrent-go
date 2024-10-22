@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"net"
@@ -15,14 +16,14 @@ import (
 	bencode "github.com/jackpal/bencode-go"
 )
 
-func peerID() []byte {
+var peerID func() []byte = sync.OnceValue(func() []byte {
 	bytes := make([]byte, 20)
 	_, err := rand.Read(bytes)
 	if err != nil {
 		panic(err)
 	}
 	return bytes
-}
+})
 
 func getPeers(trackerURL string, infoHash []byte, length int) ([]string, error) {
 	req, err := http.NewRequest("GET", trackerURL, nil)
@@ -32,7 +33,7 @@ func getPeers(trackerURL string, infoHash []byte, length int) ([]string, error) 
 
 	query := req.URL.Query()
 	query.Add("info_hash", string(infoHash))
-	query.Add("peer_id", string(peerID()))
+	query.Add("peer_id", hex.EncodeToString(peerID())[:20])
 	query.Add("port", "6881")
 	query.Add("uploaded", "0")
 	query.Add("downloaded", "0")

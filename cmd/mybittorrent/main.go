@@ -287,6 +287,114 @@ func cmdMagnetHandshake() {
 	fmt.Printf("Peer Metadata Extension ID: %v\n", peerExtID)
 }
 
+func cmdMagnetInfo() {
+	magnetURL := os.Args[2]
+
+	magnet, err := NewMagnet(magnetURL)
+	if err != nil {
+		panic(err)
+	}
+
+	peers, err := magnet.Peers()
+	if err != nil {
+		panic(err)
+	}
+
+	if len(peers) == 0 {
+		panic("no peers")
+	}
+
+	conn, err := net.Dial("tcp", peers[0])
+	if err != nil {
+		panic(err)
+	}
+
+	defer conn.Close()
+
+	handshake := HandshakeMessage{
+		Protocol: "BitTorrent protocol",
+		InfoHash: magnet.InfoHash,
+		PeerID:   peerID(),
+	}
+	handshake.SetExtension()
+	if err := marshalHandshakeMessage(conn, &handshake); err != nil {
+		panic(err)
+	}
+
+	if err := unmarshalHandshakeMessage(conn, &handshake); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Peer ID: %x\n", handshake.PeerID)
+
+	// read bitfield
+	var m PeerMessage
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+	if m.ID != IDBitfield {
+		fmt.Printf("m: %v\n", m)
+		panic("expect bitfield")
+	}
+
+	if !handshake.IsExtension() {
+		log.Println("extension not supported")
+		return
+	}
+
+	// extension handshake
+	extensionPayload := ExtensionPayload{
+		MessageID: 0,
+		Message: map[string]any{
+			"m": map[string]any{
+				"ut_metadata": 1,
+			},
+		},
+	}
+	payload, err := extensionPayload.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	m = PeerMessage{
+		ID:      IDExtension,
+		Payload: payload,
+	}
+	if err := marshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+	if m.ID != IDExtension {
+		panic("expect extension")
+	}
+
+	if err := extensionPayload.UnmarshalBinary(m.Payload); err != nil {
+		panic(err)
+	}
+
+	// request metadata
+	peerExtID := extensionPayload.Message.(map[string]any)["m"].(map[string]any)["ut_metadata"].(int64)
+	extensionPayload = ExtensionPayload{
+		MessageID: byte(peerExtID),
+		Message: map[string]any{
+			"msg_type": 0,
+			"piece":    0,
+		},
+	}
+	payload, err = extensionPayload.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	m = PeerMessage{
+		ID:      IDExtension,
+		Payload: payload,
+	}
+	if err := marshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+}
+
 func main() {
 	command := os.Args[1]
 
@@ -307,6 +415,8 @@ func main() {
 		cmdMagnetParse()
 	case "magnet_handshake":
 		cmdMagnetHandshake()
+	case "magnet_info":
+		cmdMagnetInfo()
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
