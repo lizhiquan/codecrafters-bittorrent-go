@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	bencode "github.com/jackpal/bencode-go"
 )
 
 type HandshakeMessage struct {
@@ -13,6 +15,15 @@ type HandshakeMessage struct {
 	Reserved [8]byte
 	InfoHash []byte
 	PeerID   []byte
+}
+
+// https://www.bittorrent.org/beps/bep_0010.html
+func (m *HandshakeMessage) SetExtension() {
+	m.Reserved[5] |= 1 << 4
+}
+
+func (m *HandshakeMessage) IsExtension() bool {
+	return m.Reserved[5]&(1<<4) != 0
 }
 
 func marshalHandshakeMessage(w io.Writer, m *HandshakeMessage) error {
@@ -85,7 +96,8 @@ const (
 	IDRequest
 	IDPiece
 	IDCancel
-	IDKeepAlive
+	IDExtension byte = 20
+	IDKeepAlive byte = 99
 )
 
 func unmarshalPeerMessage(r io.Reader, m *PeerMessage) error {
@@ -178,4 +190,38 @@ func (p *PiecePayload) UnmarshalBinary(data []byte) error {
 	}
 	p.Block = buf.Bytes()
 	return nil
+}
+
+// https://www.bittorrent.org/beps/bep_0009.html
+type ExtensionPayload struct {
+	MessageID byte
+	Message   any
+}
+
+func (p *ExtensionPayload) UnmarshalBinary(data []byte) error {
+	buf := bytes.NewBuffer(data)
+
+	messageID, err := buf.ReadByte()
+	if err != nil {
+		return fmt.Errorf("read message id: %w", err)
+	}
+	p.MessageID = messageID
+
+	if p.Message, err = bencode.Decode(buf); err != nil {
+		return fmt.Errorf("decode message: %w", err)
+	}
+
+	return nil
+}
+
+func (p *ExtensionPayload) MarshalBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	buf.WriteByte(p.MessageID)
+
+	if err := bencode.Marshal(buf, p.Message); err != nil {
+		return nil, fmt.Errorf("marshal message: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }

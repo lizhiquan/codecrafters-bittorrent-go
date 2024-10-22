@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -211,7 +210,6 @@ func cmdMagnetHandshake() {
 		panic(err)
 	}
 
-	fmt.Println(peers)
 	if len(peers) == 0 {
 		panic("no peers")
 	}
@@ -228,8 +226,7 @@ func cmdMagnetHandshake() {
 		InfoHash: magnet.InfoHash,
 		PeerID:   peerID(),
 	}
-	// https://www.bittorrent.org/beps/bep_0010.html
-	handshake.Reserved[5] = 1 << 4
+	handshake.SetExtension()
 	if err := marshalHandshakeMessage(conn, &handshake); err != nil {
 		panic(err)
 	}
@@ -240,29 +237,54 @@ func cmdMagnetHandshake() {
 
 	fmt.Printf("Peer ID: %x\n", handshake.PeerID)
 
-	if handshake.Reserved[5]&(1<<4) == 0 {
+	// read bitfield
+	var m PeerMessage
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+	if m.ID != IDBitfield {
+		fmt.Printf("m: %v\n", m)
+		panic("expect bitfield")
+	}
+
+	if !handshake.IsExtension() {
 		log.Println("extension not supported")
 		return
 	}
 
 	// extension handshake
-	mID := byte(0)
-	var buffer bytes.Buffer
-	buffer.WriteByte(mID)
-	if err := bencode.Marshal(&buffer, map[string]any{
-		"m": map[string]any{
-			"ut_metadata": 1,
+	extensionPayload := ExtensionPayload{
+		MessageID: 0,
+		Message: map[string]any{
+			"m": map[string]any{
+				"ut_metadata": 1,
+			},
 		},
-	}); err != nil {
+	}
+	payload, err := extensionPayload.MarshalBinary()
+	if err != nil {
 		panic(err)
 	}
-	m := PeerMessage{
-		ID:      20,
-		Payload: buffer.Bytes(),
+	m = PeerMessage{
+		ID:      IDExtension,
+		Payload: payload,
 	}
 	if err := marshalPeerMessage(conn, &m); err != nil {
 		panic(err)
 	}
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+	if m.ID != IDExtension {
+		panic("expect extension")
+	}
+
+	if err := extensionPayload.UnmarshalBinary(m.Payload); err != nil {
+		panic(err)
+	}
+
+	peerExtID := extensionPayload.Message.(map[string]any)["m"].(map[string]any)["ut_metadata"]
+	fmt.Printf("Peer Metadata Extension ID: %v\n", peerExtID)
 }
 
 func main() {
