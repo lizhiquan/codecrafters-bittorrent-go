@@ -63,37 +63,120 @@ type task struct {
 	pieceHash  []byte
 }
 
-func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync.WaitGroup) {
+func dialPeer(peerAddr string, infoHash []byte, isMagnet bool) (net.Conn, *TorrentInfo, error) {
 	conn, err := net.Dial("tcp", peerAddr)
 	if err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("dial: %w", err)
 	}
-
-	defer conn.Close()
 
 	handshakeMessage := HandshakeMessage{
 		Protocol: "BitTorrent protocol",
-		InfoHash: torrent.Info.Hash(),
+		InfoHash: infoHash,
 		PeerID:   peerID(),
 	}
+	if isMagnet {
+		handshakeMessage.SetExtension()
+	}
 	if err := marshalHandshakeMessage(conn, &handshakeMessage); err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("marshal handshake: %w", err)
 	}
 	if err := unmarshalHandshakeMessage(conn, &handshakeMessage); err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("unmarshal handshake: %w", err)
 	}
 
-	// read bitfield
-	var m PeerMessage
+	if isMagnet && !handshakeMessage.IsExtension() {
+		return nil, nil, fmt.Errorf("extension not supported")
+	}
+
+	if !isMagnet {
+		// read bitfield
+		var m PeerMessage
+		if err := unmarshalPeerMessage(conn, &m); err != nil {
+			return nil, nil, fmt.Errorf("unmarshal bitfield: %w", err)
+		}
+		if m.ID != IDBitfield {
+			return nil, nil, fmt.Errorf("expect bitfield")
+		}
+
+		return conn, nil, nil
+	}
+
+	// extension handshake
+	extensionPayload := ExtensionPayload{
+		MessageID: 0,
+		Message: map[string]any{
+			"m": map[string]any{
+				"ut_metadata": 1,
+			},
+		},
+	}
+	payload, err := extensionPayload.MarshalBinary()
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal extension: %w", err)
+	}
+	m := PeerMessage{
+		ID:      IDExtension,
+		Payload: payload,
+	}
+	if err := marshalPeerMessage(conn, &m); err != nil {
+		return nil, nil, fmt.Errorf("marshal extension: %w", err)
+	}
 	if err := unmarshalPeerMessage(conn, &m); err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("unmarshal extension: %w", err)
 	}
-	if m.ID != IDBitfield {
-		panic("expect bitfield")
+	if m.ID == IDBitfield {
+		if err := unmarshalPeerMessage(conn, &m); err != nil {
+			return nil, nil, fmt.Errorf("unmarshal bitfield: %w", err)
+		}
+	}
+	if m.ID != IDExtension {
+		return nil, nil, fmt.Errorf("expect extension")
 	}
 
+	if err := extensionPayload.UnmarshalBinary(m.Payload); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal extension: %w", err)
+	}
+
+	// request metadata
+	peerExtID := extensionPayload.Message.(map[string]any)["m"].(map[string]any)["ut_metadata"].(int64)
+	extensionPayload = ExtensionPayload{
+		MessageID: byte(peerExtID),
+		Message: map[string]any{
+			"msg_type": 0,
+			"piece":    0,
+		},
+	}
+	payload, err = extensionPayload.MarshalBinary()
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal extension: %w", err)
+	}
+	m = PeerMessage{
+		ID:      IDExtension,
+		Payload: payload,
+	}
+	if err := marshalPeerMessage(conn, &m); err != nil {
+		return nil, nil, fmt.Errorf("marshal extension: %w", err)
+	}
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal extension: %w", err)
+	}
+	if err := extensionPayload.UnmarshalBinary(m.Payload); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal extension: %w", err)
+	}
+
+	size := extensionPayload.Message.(map[string]any)["total_size"].(int64)
+	metadataBytes := m.Payload[len(m.Payload)-int(size):]
+	var torrentInfo TorrentInfo
+	if err := bencode.Unmarshal(bytes.NewReader(metadataBytes), &torrentInfo); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal metadata: %w", err)
+	}
+
+	return conn, &torrentInfo, nil
+}
+
+func downloadPiece(conn net.Conn, torrentInfo *TorrentInfo, taskCh chan task, wg *sync.WaitGroup) {
 	// send interested
-	m = PeerMessage{ID: IDInterested}
+	m := PeerMessage{ID: IDInterested}
 	if err := marshalPeerMessage(conn, &m); err != nil {
 		panic(err)
 	}
@@ -115,8 +198,8 @@ func downloadPiece(torrent *Torrent, peerAddr string, taskCh chan task, wg *sync
 		}
 
 		// download piece
-		size := torrent.Info.Length
-		pieceSize := torrent.Info.PieceLength
+		size := torrentInfo.Length
+		pieceSize := torrentInfo.PieceLength
 		pieceCount := int(math.Ceil(float64(size) / float64(pieceSize)))
 		if task.pieceIndex == pieceCount-1 {
 			pieceSize = size % pieceSize

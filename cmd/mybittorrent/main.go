@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -112,9 +111,15 @@ func cmdDownloadPiece() {
 		panic("no peers")
 	}
 
+	conn, _, err := dialPeer(peers[0], torrent.Info.Hash(), false)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
 	taskCh := make(chan task)
 	wg := sync.WaitGroup{}
-	go downloadPiece(torrent, peers[0], taskCh, &wg)
+	go downloadPiece(conn, &torrent.Info, taskCh, &wg)
 	wg.Add(1)
 	taskCh <- task{
 		piecePath:  piecePath,
@@ -142,7 +147,13 @@ func cmdDownload() {
 	taskCh := make(chan task)
 	wg := sync.WaitGroup{}
 	for i := 0; i < len(peers); i++ {
-		go downloadPiece(torrent, peers[i], taskCh, &wg)
+		conn, _, err := dialPeer(peers[i], torrent.Info.Hash(), false)
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+
+		go downloadPiece(conn, &torrent.Info, taskCh, &wg)
 	}
 
 	size := torrent.Info.Length
@@ -300,100 +311,11 @@ func cmdMagnetInfo() {
 		panic("no peers")
 	}
 
-	conn, err := net.Dial("tcp", peers[0])
+	conn, torrentInfo, err := dialPeer(peers[0], magnet.InfoHash, true)
 	if err != nil {
 		panic(err)
 	}
-
-	defer conn.Close()
-
-	handshake := HandshakeMessage{
-		Protocol: "BitTorrent protocol",
-		InfoHash: magnet.InfoHash,
-		PeerID:   peerID(),
-	}
-	handshake.SetExtension()
-	if err := marshalHandshakeMessage(conn, &handshake); err != nil {
-		panic(err)
-	}
-	if err := unmarshalHandshakeMessage(conn, &handshake); err != nil {
-		panic(err)
-	}
-
-	if !handshake.IsExtension() {
-		log.Println("extension not supported")
-		return
-	}
-
-	// extension handshake
-	extensionPayload := ExtensionPayload{
-		MessageID: 0,
-		Message: map[string]any{
-			"m": map[string]any{
-				"ut_metadata": 1,
-			},
-		},
-	}
-	payload, err := extensionPayload.MarshalBinary()
-	if err != nil {
-		panic(err)
-	}
-	m := PeerMessage{
-		ID:      IDExtension,
-		Payload: payload,
-	}
-	if err := marshalPeerMessage(conn, &m); err != nil {
-		panic(err)
-	}
-	if err := unmarshalPeerMessage(conn, &m); err != nil {
-		panic(err)
-	}
-	if m.ID == IDBitfield {
-		if err := unmarshalPeerMessage(conn, &m); err != nil {
-			panic(err)
-		}
-	}
-	if m.ID != IDExtension {
-		panic("expect extension")
-	}
-
-	if err := extensionPayload.UnmarshalBinary(m.Payload); err != nil {
-		panic(err)
-	}
-
-	// request metadata
-	peerExtID := extensionPayload.Message.(map[string]any)["m"].(map[string]any)["ut_metadata"].(int64)
-	extensionPayload = ExtensionPayload{
-		MessageID: byte(peerExtID),
-		Message: map[string]any{
-			"msg_type": 0,
-			"piece":    0,
-		},
-	}
-	payload, err = extensionPayload.MarshalBinary()
-	if err != nil {
-		panic(err)
-	}
-	m = PeerMessage{
-		ID:      IDExtension,
-		Payload: payload,
-	}
-	if err := marshalPeerMessage(conn, &m); err != nil {
-		panic(err)
-	}
-	if err := unmarshalPeerMessage(conn, &m); err != nil {
-		panic(err)
-	}
-	if err := extensionPayload.UnmarshalBinary(m.Payload); err != nil {
-		panic(err)
-	}
-
-	size := extensionPayload.Message.(map[string]any)["total_size"].(int64)
-	metadataBytes := m.Payload[len(m.Payload)-int(size):]
-	var torrentInfo TorrentInfo
-	if err := bencode.Unmarshal(bytes.NewReader(metadataBytes), &torrentInfo); err != nil {
-		panic(err)
-	}
+	conn.Close()
 
 	fmt.Printf("Tracker URL: %s\n", magnet.TrackerURL)
 	fmt.Printf("Length: %d\n", torrentInfo.Length)
@@ -402,6 +324,115 @@ func cmdMagnetInfo() {
 	fmt.Println("Piece Hashes:")
 	for _, hash := range torrentInfo.PieceHashes() {
 		fmt.Printf("%x\n", hash)
+	}
+}
+
+func cmdMagnetDownloadPiece() {
+	piecePath := os.Args[3]
+
+	magnet, err := NewMagnet(os.Args[4])
+	if err != nil {
+		panic(err)
+	}
+
+	pieceIndex, err := strconv.Atoi(os.Args[5])
+	if err != nil {
+		panic(err)
+	}
+
+	peers, err := magnet.Peers()
+	if err != nil {
+		panic(err)
+	}
+	if len(peers) == 0 {
+		panic("no peers")
+	}
+
+	conn, torrentInfo, err := dialPeer(peers[0], magnet.InfoHash, true)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	taskCh := make(chan task)
+	wg := sync.WaitGroup{}
+	go downloadPiece(conn, torrentInfo, taskCh, &wg)
+	wg.Add(1)
+	taskCh <- task{
+		piecePath:  piecePath,
+		pieceIndex: pieceIndex,
+		pieceHash:  torrentInfo.PieceHashes()[pieceIndex],
+	}
+
+	wg.Wait()
+	close(taskCh)
+}
+
+func cmdMagnetDownload() {
+	piecePath := os.Args[3]
+
+	magnet, err := NewMagnet(os.Args[4])
+	if err != nil {
+		panic(err)
+	}
+
+	peers, err := magnet.Peers()
+	if err != nil {
+		panic(err)
+	}
+
+	taskCh := make(chan task)
+	wg := sync.WaitGroup{}
+	var torrentInfo *TorrentInfo
+	for i := 0; i < len(peers); i++ {
+		var conn net.Conn
+		conn, torrentInfo, err = dialPeer(peers[i], magnet.InfoHash, true)
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+
+		go downloadPiece(conn, torrentInfo, taskCh, &wg)
+	}
+
+	size := torrentInfo.Length
+	pieceSize := torrentInfo.PieceLength
+	pieceCount := int(math.Ceil(float64(size) / float64(pieceSize)))
+	wg.Add(pieceCount)
+	pieceHashes := torrentInfo.PieceHashes()
+	for i := 0; i < pieceCount; i++ {
+		taskCh <- task{
+			piecePath:  fmt.Sprintf("%s-%d", piecePath, i),
+			pieceIndex: i,
+			pieceHash:  pieceHashes[i],
+		}
+	}
+
+	wg.Wait()
+	close(taskCh)
+
+	// merge pieces to target file
+	targetFile, err := os.Create(piecePath)
+	if err != nil {
+		panic(err)
+	}
+	defer targetFile.Close()
+
+	for i := 0; i < pieceCount; i++ {
+		pieceFile, err := os.Open(fmt.Sprintf("%s-%d", piecePath, i))
+		if err != nil {
+			panic(err)
+		}
+
+		if _, err := io.Copy(targetFile, pieceFile); err != nil {
+			panic(err)
+		}
+
+		pieceFile.Close()
+	}
+
+	for i := 0; i < pieceCount; i++ {
+		os.Remove(fmt.Sprintf("%s-%d", piecePath, i))
 	}
 }
 
@@ -427,6 +458,10 @@ func main() {
 		cmdMagnetHandshake()
 	case "magnet_info":
 		cmdMagnetInfo()
+	case "magnet_download_piece":
+		cmdMagnetDownloadPiece()
+	case "magnet_download":
+		cmdMagnetDownload()
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
