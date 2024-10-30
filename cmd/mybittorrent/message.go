@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -51,30 +50,28 @@ func marshalHandshakeMessage(w io.Writer, m *HandshakeMessage) error {
 }
 
 func unmarshalHandshakeMessage(r io.Reader, m *HandshakeMessage) error {
-	reader := bufio.NewReader(r)
-
-	protocolLength, err := reader.ReadByte()
-	if err != nil {
+	protocolLengthBytes := make([]byte, 1)
+	if _, err := io.ReadFull(r, protocolLengthBytes); err != nil {
 		return fmt.Errorf("read protocol length: %w", err)
 	}
 
-	protocol := make([]byte, protocolLength)
-	if _, err := io.ReadFull(reader, protocol); err != nil {
+	protocol := make([]byte, protocolLengthBytes[0])
+	if _, err := io.ReadFull(r, protocol); err != nil {
 		return fmt.Errorf("read protocol: %w", err)
 	}
 	m.Protocol = string(protocol)
 
-	if _, err := io.ReadFull(reader, m.Reserved[:]); err != nil {
+	if _, err := io.ReadFull(r, m.Reserved[:]); err != nil {
 		return fmt.Errorf("read reserved: %w", err)
 	}
 
 	m.InfoHash = make([]byte, 20)
-	if _, err := io.ReadFull(reader, m.InfoHash); err != nil {
+	if _, err := io.ReadFull(r, m.InfoHash); err != nil {
 		return fmt.Errorf("read info hash: %w", err)
 	}
 
 	m.PeerID = make([]byte, 20)
-	if _, err := io.ReadFull(reader, m.PeerID); err != nil {
+	if _, err := io.ReadFull(r, m.PeerID); err != nil {
 		return fmt.Errorf("read peer id: %w", err)
 	}
 
@@ -101,10 +98,8 @@ const (
 )
 
 func unmarshalPeerMessage(r io.Reader, m *PeerMessage) error {
-	reader := bufio.NewReader(r)
-
 	lengthBytes := make([]byte, 4)
-	if _, err := io.ReadFull(reader, lengthBytes); err != nil {
+	if _, err := io.ReadFull(r, lengthBytes); err != nil {
 		return fmt.Errorf("read length: %w", err)
 	}
 	length := binary.BigEndian.Uint32(lengthBytes)
@@ -114,14 +109,14 @@ func unmarshalPeerMessage(r io.Reader, m *PeerMessage) error {
 		return nil
 	}
 
-	id, err := reader.ReadByte()
-	if err != nil {
+	idBytes := make([]byte, 1)
+	if _, err := io.ReadFull(r, idBytes); err != nil {
 		return fmt.Errorf("read id: %w", err)
 	}
-	m.ID = id
+	m.ID = idBytes[0]
 
 	m.Payload = make([]byte, length-1)
-	if _, err := io.ReadFull(reader, m.Payload); err != nil {
+	if _, err := io.ReadFull(r, m.Payload); err != nil {
 		return fmt.Errorf("read payload: %w", err)
 	}
 

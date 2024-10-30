@@ -25,7 +25,7 @@ var peerID func() []byte = sync.OnceValue(func() []byte {
 	return bytes
 })
 
-func getPeers(trackerURL string, infoHash []byte, length int) ([]string, error) {
+func getPeers(trackerURL string, infoHash []byte, left int) ([]string, error) {
 	req, err := http.NewRequest("GET", trackerURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -37,7 +37,7 @@ func getPeers(trackerURL string, infoHash []byte, length int) ([]string, error) 
 	query.Add("port", "6881")
 	query.Add("uploaded", "0")
 	query.Add("downloaded", "0")
-	query.Add("left", strconv.Itoa(length))
+	query.Add("left", strconv.Itoa(left))
 	query.Add("compact", "1")
 	req.URL.RawQuery = query.Encode()
 
@@ -88,16 +88,16 @@ func dialPeer(peerAddr string, infoHash []byte, isMagnet bool) (net.Conn, *Torre
 		return nil, nil, fmt.Errorf("extension not supported")
 	}
 
-	if !isMagnet {
-		// read bitfield
-		var m PeerMessage
-		if err := unmarshalPeerMessage(conn, &m); err != nil {
-			return nil, nil, fmt.Errorf("unmarshal bitfield: %w", err)
-		}
-		if m.ID != IDBitfield {
-			return nil, nil, fmt.Errorf("expect bitfield")
-		}
+	// read bitfield
+	var m PeerMessage
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal bitfield: %w", err)
+	}
+	if m.ID != IDBitfield {
+		return nil, nil, fmt.Errorf("expect bitfield")
+	}
 
+	if !isMagnet {
 		return conn, nil, nil
 	}
 
@@ -114,7 +114,7 @@ func dialPeer(peerAddr string, infoHash []byte, isMagnet bool) (net.Conn, *Torre
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal extension: %w", err)
 	}
-	m := PeerMessage{
+	m = PeerMessage{
 		ID:      IDExtension,
 		Payload: payload,
 	}
@@ -123,11 +123,6 @@ func dialPeer(peerAddr string, infoHash []byte, isMagnet bool) (net.Conn, *Torre
 	}
 	if err := unmarshalPeerMessage(conn, &m); err != nil {
 		return nil, nil, fmt.Errorf("unmarshal extension: %w", err)
-	}
-	if m.ID == IDBitfield {
-		if err := unmarshalPeerMessage(conn, &m); err != nil {
-			return nil, nil, fmt.Errorf("unmarshal bitfield: %w", err)
-		}
 	}
 	if m.ID != IDExtension {
 		return nil, nil, fmt.Errorf("expect extension")
@@ -191,6 +186,8 @@ func downloadPiece(conn net.Conn, torrentInfo *TorrentInfo, taskCh chan task, wg
 
 	for task := range taskCh {
 	StartDownloadPiece:
+		fmt.Printf("downloading piece %d\n", task.pieceIndex)
+
 		// create piece file
 		pieceFile, err := os.Create(task.piecePath)
 		if err != nil {

@@ -254,6 +254,15 @@ func cmdMagnetHandshake() {
 		return
 	}
 
+	// read bitfield
+	var m PeerMessage
+	if err := unmarshalPeerMessage(conn, &m); err != nil {
+		panic(err)
+	}
+	if m.ID != IDBitfield {
+		panic("expect bitfield")
+	}
+
 	// extension handshake
 	extensionPayload := ExtensionPayload{
 		MessageID: 0,
@@ -267,7 +276,7 @@ func cmdMagnetHandshake() {
 	if err != nil {
 		panic(err)
 	}
-	m := PeerMessage{
+	m = PeerMessage{
 		ID:      IDExtension,
 		Payload: payload,
 	}
@@ -276,11 +285,6 @@ func cmdMagnetHandshake() {
 	}
 	if err := unmarshalPeerMessage(conn, &m); err != nil {
 		panic(err)
-	}
-	if m.ID == IDBitfield {
-		if err := unmarshalPeerMessage(conn, &m); err != nil {
-			panic(err)
-		}
 	}
 	if m.ID != IDExtension {
 		panic("expect extension")
